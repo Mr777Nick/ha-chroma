@@ -62,7 +62,13 @@ if ($Install) {
     if (-not $LogFile) { $LogFile = Join-Path $env:LOCALAPPDATA "chroma-proxy.log" }
     $arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Port $Port -UpstreamPort $UpstreamPort -LogFile `"$LogFile`""
     $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    # Start at logon, and every 5 minutes to bring the proxy back if it was closed
+    # (an exit by console close is not a task "failure", so RestartCount does not cover it).
+    # MultipleInstances IgnoreNew keeps a running proxy from being started twice.
+    $trigger = @(
+        New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5)
+    )
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
         -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
