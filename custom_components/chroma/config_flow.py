@@ -184,6 +184,12 @@ class ChromaFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         errors = dict()
 
         if user_input:
+            # Accept `host:port` in the host field
+            host, sep, port = user_input[CONF_HOST].strip().rpartition(":")
+            if sep and host and ":" not in host and port.isdigit():
+                user_input[CONF_HOST] = host
+                user_input[CONF_PORT] = int(port)
+
             # Check if host can be resolved
             ip = await self.hass.async_add_executor_job(
                 _check_host, user_input[CONF_HOST]
