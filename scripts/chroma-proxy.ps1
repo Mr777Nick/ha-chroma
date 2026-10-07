@@ -159,9 +159,15 @@ public static class ChromaProxy
                 if (req == null) break;
                 DateTime started = DateTime.Now;
                 byte[] response = Process(req, clientIp, local.Address.ToString());
-                Log(clientIp + " " + req.Method + " " + req.Path + " -> "
-                    + Encoding.ASCII.GetString(response, 9, 3) + " ("
-                    + (int)(DateTime.Now - started).TotalMilliseconds + " ms)");
+                string status = Encoding.ASCII.GetString(response, 9, 3);
+                // Successful heartbeats arrive every few seconds; keep them out of the log
+                if (status != "200" || !req.Path.EndsWith("/heartbeat", StringComparison.OrdinalIgnoreCase))
+                {
+                    Log(clientIp + " " + req.Method + " " + req.Path + " "
+                        + Snippet(req.Body) + " -> " + status + " "
+                        + Snippet(ResponseBody(response)) + " ("
+                        + (int)(DateTime.Now - started).TotalMilliseconds + " ms)");
+                }
                 stream.Write(response, 0, response.Length);
                 stream.Flush();
                 if (req.Close) break;
@@ -170,6 +176,27 @@ public static class ChromaProxy
         catch (IOException) { }
         catch (Exception ex) { Log(clientIp + " error: " + ex.Message); }
         finally { client.Close(); }
+    }
+
+    static string Snippet(byte[] body)
+    {
+        if (body == null || body.Length == 0) return "";
+        string text = Encoding.UTF8.GetString(body, 0, Math.Min(body.Length, 120));
+        return body.Length > 120 ? text + "..." : text;
+    }
+
+    static byte[] ResponseBody(byte[] response)
+    {
+        for (int i = 0; i + 3 < response.Length; i++)
+        {
+            if (response[i] == '\r' && response[i + 1] == '\n' && response[i + 2] == '\r' && response[i + 3] == '\n')
+            {
+                byte[] body = new byte[response.Length - i - 4];
+                Buffer.BlockCopy(response, i + 4, body, 0, body.Length);
+                return body;
+            }
+        }
+        return null;
     }
 
     static string ReadLine(Stream stream)
