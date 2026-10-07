@@ -30,14 +30,41 @@ After Chroma is installed, you can add your device from Home Assistant UI.
 
 To connect you need to provide the following data:
 - IP address or hostname
+- Port (`54235` if HA runs on the same PC as Synapse, `54236` when connecting over the network through the LAN proxy - see below)
 - Which devices do you want to control (e.g. `chromalink`, `headset`, `keyboard`, `keypad`, `mouse`, `mousepad`)
 - Layout of your keyboard (if the `keyboard` option is selected)
 
 [![Open your Home Assistant instance and show your integrations.](https://my.home-assistant.io/badges/integrations.svg)](https://my.home-assistant.io/redirect/integrations/)
 
-#### Allow the connection (adjust your firewall settings)
+#### Allow the connection from the network (Synapse 4)
 
-To use the integration, you might need to adjust your firewall settings on the device with Chroma devices. Please, allow the incoming `TCP` connection on port `54236` from your HA instance. In case, this connection is not allowed, the integration will not be able to connect and might be stuck in the `configuring` state for an extended period.
+Razer Synapse registers the Chroma SDK in Windows HTTP.sys as `http://localhost:54235/`, and HTTP.sys only serves this URL to clients on the same PC:
+- a request with any `Host` other than `localhost` returns `400 Bad Request - Invalid Hostname`;
+- a request with `Host: localhost` from another device returns `403 Forbidden`.
+
+The session port returned by the SDK (a random port from the Windows dynamic range, e.g. `{"sessionid":52519,"uri":"http://localhost:52519/chromasdk"}`) behaves the same way. Port `54235` and the session ports are held by HTTP.sys on all addresses, so firewall rules or `netsh portproxy` cannot fix this.
+
+To make the SDK reachable from Home Assistant, run the LAN proxy [`scripts/chroma-proxy.ps1`](scripts/chroma-proxy.ps1) on the Windows PC. It listens on port `54236`, forwards every request to the SDK over loopback and maps the SDK session onto the same port, so only one port needs to be open.
+
+1. Install the proxy to start at every logon (no admin rights needed):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\chroma-proxy.ps1 -Install
+   ```
+
+   The log is written to `%LOCALAPPDATA%\chroma-proxy.log`. Remove it with `-Uninstall`, or run the script without parameters to start it in the foreground.
+
+2. Allow the proxy port in the firewall, from an elevated PowerShell, passing your HA IP address:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\chroma-firewall.ps1 -RemoteAddress <HA IP>
+   ```
+
+   Make sure the network profile on the Windows PC is `Private` (the rule is not applied to `Public` networks).
+
+3. Add the integration in HA with the PC IP address and port `54236`.
+
+To check from another device: `curl http://<PC IP>:54236/razer/chromasdk` should return the SDK version.
 
 #### Lights
 

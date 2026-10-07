@@ -9,7 +9,7 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.const import CONF_HOST, CONF_NAME
+from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import config_validation as cv
 
@@ -20,6 +20,7 @@ from .const import (
     CONF_DEVICES,
     CONF_LAYOUT,
     DEFAULT_LAYOUT,
+    DEFAULT_PORT,
     DOMAIN,
     RESULT_SUCCESS,
 )
@@ -60,6 +61,9 @@ def _create_form_discovery(
 
     schema = {
         vol.Required(CONF_HOST, default=user_input.get(CONF_HOST, "")): cv.string,
+        vol.Required(
+            CONF_PORT, default=user_input.get(CONF_PORT, DEFAULT_PORT)
+        ): cv.port,
     }
 
     return vol.Schema(schema)

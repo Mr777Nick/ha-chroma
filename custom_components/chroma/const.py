@@ -35,6 +35,7 @@ CHROMA_LAYOUTS = {
     "EN_US": "English (US)",
 }
 DEFAULT_LAYOUT = "EN_US"
+DEFAULT_PORT = 54235
 DEFAULT_SCAN_INTERVAL = 5
 
 # Defaults for services

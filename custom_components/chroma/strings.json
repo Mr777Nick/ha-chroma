@@ -4,7 +4,8 @@
             "discovery": {
                 "description": "How to find your device",
                 "data": {
-                    "host": "Hostname / IP address"
+                    "host": "Hostname / IP address",
+                    "port": "Port (54235 direct, 54236 via the LAN proxy)"
                 }
             },
             "devices": {

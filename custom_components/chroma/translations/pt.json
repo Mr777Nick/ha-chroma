@@ -4,7 +4,8 @@
             "discovery": {
                 "description": "Como encontrar o seu dispositivo",
                 "data": {
-                    "host": "Nome do host / Endereço IP"
+                    "host": "Nome do host / Endereço IP",
+                    "port": "Porta (54235 direta, 54236 através do proxy LAN)"
                 }
             },
             "devices": {

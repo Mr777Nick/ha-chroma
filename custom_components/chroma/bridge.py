@@ -7,13 +7,19 @@ from typing import Any
 
 import aiohttp
 from aiochroma import AIOChroma, ChromaError
-from homeassistant.const import CONF_HOST
+from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
-from .const import CONF_DEVICES, CONF_LAYOUT, DEFAULT_LAYOUT, SENSORS_TYPE_LIGHT
+from .const import (
+    CONF_DEVICES,
+    CONF_LAYOUT,
+    DEFAULT_LAYOUT,
+    DEFAULT_PORT,
+    SENSORS_TYPE_LIGHT,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,12 +52,19 @@ class ChromaBridge:
     ) -> AIOChroma:
         """Get Chroma API."""
 
-        return AIOChroma(
+        api = AIOChroma(
             host=configs[CONF_HOST],
             targets=configs.get(CONF_DEVICES),
             layout=configs.get(CONF_LAYOUT, DEFAULT_LAYOUT),
             session=session,
         )
+
+        # AIOChroma does not accept a port, but its connection does.
+        # A non-default port is used to reach the SDK through the LAN proxy
+        # (scripts/chroma-proxy.ps1), since the SDK itself only serves localhost.
+        api._connection._port = configs.get(CONF_PORT, DEFAULT_PORT)
+
+        return api
 
     @property
     def is_connected(self) -> bool:
