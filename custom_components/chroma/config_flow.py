@@ -306,12 +306,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> None:
         """Initialize options flow."""
 
-        self.config_entry = config_entry
-
+        # `self.config_entry` is provided by Home Assistant and cannot be set
         self._selection = dict()
-        self._configs: dict[str, Any] = self.config_entry.data.copy()
+        self._configs: dict[str, Any] = config_entry.data.copy()
         self._host: str = self._configs[CONF_HOST]
-        self._options: dict[str, Any] = self.config_entry.options.copy()
+        self._options: dict[str, Any] = config_entry.options.copy()
 
         # Dictionary last_step: next_step
         self._steps = {
