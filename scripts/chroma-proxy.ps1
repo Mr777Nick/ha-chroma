@@ -157,7 +157,11 @@ public static class ChromaProxy
             {
                 Request req = ReadRequest(stream);
                 if (req == null) break;
+                DateTime started = DateTime.Now;
                 byte[] response = Process(req, clientIp, local.Address.ToString());
+                Log(clientIp + " " + req.Method + " " + req.Path + " -> "
+                    + Encoding.ASCII.GetString(response, 9, 3) + " ("
+                    + (int)(DateTime.Now - started).TotalMilliseconds + " ms)");
                 stream.Write(response, 0, response.Length);
                 stream.Flush();
                 if (req.Close) break;
@@ -258,6 +262,14 @@ public static class ChromaProxy
     static byte[] Process(Request req, string clientIp, string localIp)
     {
         string path = req.Path.Split('?')[0].TrimEnd('/');
+        // After a lost session, aiochroma reconnects to the old session URL
+        // (http://host:<sid>/chromasdk/razer/chromasdk). The session port is the
+        // proxy port, so treat it as the entry point.
+        if (path.Equals(SessionPath + EntryPath, StringComparison.OrdinalIgnoreCase))
+        {
+            path = EntryPath;
+            req.Path = EntryPath;
+        }
         bool isEntry = path.Equals(EntryPath, StringComparison.OrdinalIgnoreCase);
         bool isSession = path.Equals(SessionPath, StringComparison.OrdinalIgnoreCase)
             || path.StartsWith(SessionPath + "/", StringComparison.OrdinalIgnoreCase);
