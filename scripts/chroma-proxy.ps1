@@ -99,6 +99,20 @@ public static class ChromaProxy
     static readonly object logLock = new object();
     // client IP -> SDK session port
     static readonly Dictionary<string, int> sessions = new Dictionary<string, int>();
+    // client IP -> when its session was created
+    static readonly Dictionary<string, DateTime> sessionCreated = new Dictionary<string, DateTime>();
+    // client IP -> device path -> last effect, replayed when a lost session is re-created
+    static readonly Dictionary<string, Dictionary<string, Request>> lastEffects = new Dictionary<string, Dictionary<string, Request>>();
+    static readonly HashSet<string> replayPending = new HashSet<string>();
+
+    // Synapse only shows apps that connect after its lighting engine is up. At logon
+    // the SDK service often accepts a session before Synapse has started, and that
+    // session is never displayed. Sessions created before Synapse start + grace are
+    // dropped so the client reconnects.
+    const int SynapseGraceSeconds = 45;
+    static readonly object synapseLock = new object();
+    static DateTime synapseStart = DateTime.MinValue;
+    static DateTime synapseCheckedAt = DateTime.MinValue;
 
     class Request
     {
@@ -121,6 +135,58 @@ public static class ChromaProxy
         t.IsBackground = true;
         t.Start();
         Log("Listening on 0.0.0.0:" + port + ", forwarding to localhost:" + upstream);
+    }
+
+    // Start time of the oldest RazerAppEngine (Synapse) process, MinValue if not running
+    static DateTime SynapseStart()
+    {
+        lock (synapseLock)
+        {
+            if ((DateTime.Now - synapseCheckedAt).TotalSeconds < 5) return synapseStart;
+            synapseCheckedAt = DateTime.Now;
+            DateTime earliest = DateTime.MinValue;
+            foreach (System.Diagnostics.Process p in System.Diagnostics.Process.GetProcessesByName("RazerAppEngine"))
+            {
+                try { if (earliest == DateTime.MinValue || p.StartTime < earliest) earliest = p.StartTime; }
+                catch { }
+                finally { p.Dispose(); }
+            }
+            synapseStart = earliest;
+            return earliest;
+        }
+    }
+
+    // Forget a client's session. Called with the sessions lock held.
+    static void DropSession(string clientIp, bool replay)
+    {
+        sessions.Remove(clientIp);
+        sessionCreated.Remove(clientIp);
+        if (replay) replayPending.Add(clientIp);
+        else replayPending.Remove(clientIp);
+    }
+
+    static void ReplayEffects(string clientIp, int sid)
+    {
+        List<KeyValuePair<string, Request>> effects;
+        lock (sessions)
+        {
+            Dictionary<string, Request> stored;
+            if (!lastEffects.TryGetValue(clientIp, out stored) || stored.Count == 0) return;
+            effects = new List<KeyValuePair<string, Request>>(stored);
+        }
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            Thread.Sleep(1500);
+            foreach (KeyValuePair<string, Request> effect in effects)
+            {
+                int status;
+                string contentType;
+                byte[] body;
+                bool ok = Forward(effect.Value, sid, out status, out contentType, out body);
+                Log(clientIp + " replayed " + effect.Key + " " + Snippet(effect.Value.Body) + " -> "
+                    + (ok ? status + " " + Snippet(body) : "failed"));
+            }
+        });
     }
 
     static void Log(string message)
@@ -314,6 +380,9 @@ public static class ChromaProxy
         }
         else if (isSession)
         {
+            bool stale = false;
+            DateTime synapse = SynapseStart();
+            DateTime synapseReady = synapse.AddSeconds(SynapseGraceSeconds);
             lock (sessions)
             {
                 if (!sessions.TryGetValue(clientIp, out target))
@@ -321,6 +390,28 @@ public static class ChromaProxy
                     Log(clientIp + " " + req.Method + " " + req.Path + " -> 404 (no session)");
                     return Response(404, "application/json", "{\"result\":-1,\"error\":\"No Chroma SDK session for this client\"}");
                 }
+                DateTime created;
+                if (synapse != DateTime.MinValue && DateTime.Now > synapseReady
+                    && sessionCreated.TryGetValue(clientIp, out created) && created < synapseReady)
+                {
+                    stale = true;
+                    DropSession(clientIp, true);
+                }
+            }
+            if (stale)
+            {
+                // Close the old SDK session; the client reconnects on the 404
+                Request close = new Request();
+                close.Method = "DELETE";
+                close.Path = SessionPath;
+                close.Body = new byte[0];
+                int s;
+                string ct;
+                byte[] b;
+                Forward(close, target, out s, out ct, out b);
+                Log(clientIp + " session on SDK port " + target + " predates Synapse (started "
+                    + synapse.ToString("HH:mm:ss") + "), closed it so the client reconnects");
+                return Response(404, "application/json", "{\"result\":-1,\"error\":\"Session reset, reconnect\"}");
             }
         }
         else
@@ -333,7 +424,7 @@ public static class ChromaProxy
         byte[] body;
         if (!Forward(req, target, out status, out contentType, out body))
         {
-            if (isSession) lock (sessions) { sessions.Remove(clientIp); }
+            if (isSession) lock (sessions) { DropSession(clientIp, true); }
             Log(clientIp + " " + req.Method + " " + req.Path + " -> 502 (SDK on port " + target + " unreachable)");
             return Response(502, "application/json", "{\"result\":-1,\"error\":\"Chroma SDK is unreachable\"}");
         }
@@ -345,17 +436,41 @@ public static class ChromaProxy
             if (m.Success)
             {
                 int sid = int.Parse(m.Groups[1].Value);
-                lock (sessions) { sessions[clientIp] = sid; }
+                bool replay;
+                lock (sessions)
+                {
+                    sessions[clientIp] = sid;
+                    sessionCreated[clientIp] = DateTime.Now;
+                    replay = replayPending.Remove(clientIp);
+                }
                 text = Regex.Replace(text, "(\"sessionid\"\\s*:\\s*)\\d+", "${1}" + listenPort);
                 text = Regex.Replace(text, "(\"uri\"\\s*:\\s*\")[^\"]*(\")", "${1}http://" + localIp + ":" + listenPort + SessionPath + "${2}");
                 body = Encoding.UTF8.GetBytes(text);
                 Log(clientIp + " new session: SDK port " + sid + " mapped to proxy port " + listenPort);
+                // The previous session was lost, not closed by the client: restore its colors
+                if (replay) ReplayEffects(clientIp, sid);
             }
         }
         else if (isSession && req.Method == "DELETE" && path.Equals(SessionPath, StringComparison.OrdinalIgnoreCase))
         {
-            lock (sessions) { sessions.Remove(clientIp); }
+            lock (sessions) { DropSession(clientIp, false); }
             Log(clientIp + " session closed");
+        }
+        else if (isSession && req.Method == "PUT" && status == 200
+            && !path.EndsWith("/heartbeat", StringComparison.OrdinalIgnoreCase)
+            && Regex.IsMatch(Encoding.UTF8.GetString(body), "\"result\"\\s*:\\s*0\\b"))
+        {
+            // Remember the last effect per device for ReplayEffects
+            lock (sessions)
+            {
+                Dictionary<string, Request> stored;
+                if (!lastEffects.TryGetValue(clientIp, out stored))
+                {
+                    stored = new Dictionary<string, Request>(StringComparer.OrdinalIgnoreCase);
+                    lastEffects[clientIp] = stored;
+                }
+                stored[path] = req;
+            }
         }
 
         return Response(status, contentType, body);
