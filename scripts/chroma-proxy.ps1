@@ -28,6 +28,12 @@
 .PARAMETER LogFile
     Optional log file. Without it, log goes to the console.
 
+.PARAMETER PauseFile
+    While this file exists, the proxy closes client sessions and refuses new ones,
+    so Synapse no longer counts Home Assistant as a running Chroma app. Delete it to
+    resume; clients reconnect and get their last colors back. chroma-tray.ps1
+    toggles it from the system tray.
+
 .PARAMETER Install
     Register a scheduled task that starts the proxy hidden at logon (and start it now).
 
@@ -44,6 +50,7 @@ param(
     [int]$Port = 54236,
     [int]$UpstreamPort = 54235,
     [string]$LogFile,
+    [string]$PauseFile = (Join-Path $env:USERPROFILE ".chroma-proxy.paused"),
     [switch]$Install,
     [switch]$Uninstall
 )
@@ -114,6 +121,14 @@ public static class ChromaProxy
     static DateTime synapseStart = DateTime.MinValue;
     static DateTime synapseCheckedAt = DateTime.MinValue;
 
+    // Pause switch (see -PauseFile). Synapse's lighting engine stops driving USB/Bluetooth
+    // devices while any Chroma app is running, even one disabled in Synapse, so pausing
+    // must close the SDK session rather than just stop forwarding effects. Synapse only
+    // notices the change after a restart (chroma-tray.ps1 has a menu item for it).
+    static string pauseFile;
+    static bool paused;
+    [ThreadStatic] static bool quiet;
+
     class Request
     {
         public string Method;
@@ -123,11 +138,12 @@ public static class ChromaProxy
         public byte[] Body;
     }
 
-    public static void Start(int port, int upstream, string log)
+    public static void Start(int port, int upstream, string log, string pause)
     {
         listenPort = port;
         upstreamPort = upstream;
         logFile = string.IsNullOrEmpty(log) ? null : log;
+        pauseFile = string.IsNullOrEmpty(pause) ? null : pause;
 
         TcpListener listener = new TcpListener(IPAddress.Any, port);
         listener.Start();
@@ -135,6 +151,53 @@ public static class ChromaProxy
         t.IsBackground = true;
         t.Start();
         Log("Listening on 0.0.0.0:" + port + ", forwarding to localhost:" + upstream);
+
+        if (pauseFile != null)
+        {
+            Thread w = new Thread(PauseWatchLoop);
+            w.IsBackground = true;
+            w.Start();
+        }
+    }
+
+    static void PauseWatchLoop()
+    {
+        while (true)
+        {
+            bool now = File.Exists(pauseFile);
+            if (now != paused)
+            {
+                paused = now;
+                Log(now ? "Paused: Home Assistant sessions closed until resumed"
+                        : "Resumed: accepting Home Assistant sessions");
+            }
+            if (now) CloseAllSessions();
+            Thread.Sleep(1000);
+        }
+    }
+
+    // Close every client's SDK session; their last effects are replayed on reconnect
+    static void CloseAllSessions()
+    {
+        List<KeyValuePair<string, int>> open;
+        lock (sessions)
+        {
+            if (sessions.Count == 0) return;
+            open = new List<KeyValuePair<string, int>>(sessions);
+            foreach (KeyValuePair<string, int> s in open) DropSession(s.Key, true);
+        }
+        foreach (KeyValuePair<string, int> s in open)
+        {
+            Request close = new Request();
+            close.Method = "DELETE";
+            close.Path = SessionPath;
+            close.Body = new byte[0];
+            int status;
+            string ct;
+            byte[] b;
+            Forward(close, s.Value, out status, out ct, out b);
+            Log(s.Key + " session on SDK port " + s.Value + " closed (paused)");
+        }
     }
 
     // Start time of the oldest RazerAppEngine (Synapse) process, MinValue if not running
@@ -230,10 +293,12 @@ public static class ChromaProxy
                 Request req = ReadRequest(stream);
                 if (req == null) break;
                 DateTime started = DateTime.Now;
+                quiet = false;
                 byte[] response = Process(req, clientIp, local.Address.ToString());
                 string status = Encoding.ASCII.GetString(response, 9, 3);
-                // Successful heartbeats arrive every few seconds; keep them out of the log
-                if (status != "200" || !req.Path.EndsWith("/heartbeat", StringComparison.OrdinalIgnoreCase))
+                // Successful heartbeats arrive every few seconds, and refused retries while
+                // paused; keep them out of the log
+                if (!quiet && (status != "200" || !req.Path.EndsWith("/heartbeat", StringComparison.OrdinalIgnoreCase)))
                 {
                     Log(clientIp + " " + req.Method + " " + req.Path + " "
                         + Snippet(req.Body) + " -> " + status + " "
@@ -372,6 +437,15 @@ public static class ChromaProxy
         bool isEntry = path.Equals(EntryPath, StringComparison.OrdinalIgnoreCase);
         bool isSession = path.Equals(SessionPath, StringComparison.OrdinalIgnoreCase)
             || path.StartsWith(SessionPath + "/", StringComparison.OrdinalIgnoreCase);
+
+        if (pauseFile != null && File.Exists(pauseFile))
+        {
+            // The watcher closes open sessions within a second; refuse everything meanwhile
+            quiet = true;
+            CloseAllSessions();
+            return Response(isEntry ? 503 : 404, "application/json",
+                "{\"result\":-1,\"error\":\"Chroma proxy is paused\"}");
+        }
 
         int target;
         if (isEntry)
@@ -529,7 +603,8 @@ public static class ChromaProxy
 
     static byte[] Response(int status, string contentType, byte[] body)
     {
-        string reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 502 ? "Bad Gateway" : "Status";
+        string reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 502 ? "Bad Gateway"
+            : status == 503 ? "Service Unavailable" : "Status";
         string head = "HTTP/1.1 " + status + " " + reason + "\r\n"
             + "Content-Type: " + (string.IsNullOrEmpty(contentType) ? "application/json" : contentType) + "\r\n"
             + "Content-Length: " + body.Length + "\r\n"
@@ -543,5 +618,5 @@ public static class ChromaProxy
 }
 '@
 
-[ChromaProxy]::Start($Port, $UpstreamPort, $LogFile)
+[ChromaProxy]::Start($Port, $UpstreamPort, $LogFile, $PauseFile)
 while ($true) { Start-Sleep -Seconds 1 }

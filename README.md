@@ -66,6 +66,22 @@ To make the SDK reachable from Home Assistant, run the LAN proxy [`scripts/chrom
 
 To check from another device: `curl http://<PC IP>:54236/razer/chromasdk` should return the SDK version.
 
+#### Pausing Home Assistant control
+
+While HA holds an SDK session, Synapse counts it as a running Chroma app (`AIOChroma`). Synapse's lighting engine then stops driving USB and Bluetooth devices, even when AIOChroma or Chroma Apps is switched off in Synapse, so Quick Effects and profiles only reach Wi-Fi lights such as Aether.
+
+[`scripts/chroma-tray.ps1`](scripts/chroma-tray.ps1) adds a tray icon to pause and resume HA control (menu or double-click). Paused, the proxy closes HA's session and refuses new ones. Resumed, HA reconnects within a few seconds and its last colors are restored.
+
+Synapse 4 (tested with 4.0.827) only checks which Chroma app is running when it starts, and ignores apps that connect or leave afterwards. After pausing or resuming, choose **Restart Synapse** in the tray menu so the lights switch over. The same applies when a Chroma game exits.
+
+Install the tray icon to start at every logon:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\chroma-tray.ps1 -Install
+```
+
+Icon colors: green = HA connected, blue = waiting for HA, orange = paused, gray = proxy not running. The pause switch is the file `%USERPROFILE%\.chroma-proxy.paused` (`-PauseFile` on both scripts).
+
 #### Lights
 
 The integration provides a light entity per each device selected during the configuration process. Every entity supports `rgb_color` and `brightness` attributes.
